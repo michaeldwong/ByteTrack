@@ -17,7 +17,8 @@ from yolox.tracking_utils.timer import Timer
 
 
 IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
-
+CONFIDENCE_CAR_THRESHOLD = 0.7
+CONFIDENCE_PERSON_THRESHOLD = 0.5
 
 def make_parser():
     parser = argparse.ArgumentParser("ByteTrack Demo!")
@@ -31,6 +32,18 @@ def make_parser():
         #"--path", default="./datasets/mot/train/MOT17-05-FRCNN/img1", help="path to images or video"
         "--path", default="./videos/palace.mp4", help="path to images or video"
     )
+
+    parser.add_argument(
+        "--detections-dir", default=None, help="Directory of saved bounding box detection", type=str
+    )
+    parser.add_argument(
+        "--skip", default=2, help="Skip multiple used to generate the video", type=int
+    )
+
+    parser.add_argument(
+        "--object-class", default='car', help="Object class to detect", type=str
+    )
+
     parser.add_argument("--camid", type=int, default=0, help="webcam demo camera id")
     parser.add_argument(
         "--save_result",
@@ -145,7 +158,7 @@ class Predictor(object):
         self.rgb_means = (0.485, 0.456, 0.406)
         self.std = (0.229, 0.224, 0.225)
 
-    def inference(self, img, detection_class, confidence_thresh, timer):
+    def inference(self, img, detection_class, detections_dir, frame_num, timer):
         img_info = {"id": 0}
         if isinstance(img, str):
             img_info["file_name"] = osp.basename(img)
@@ -166,34 +179,19 @@ class Predictor(object):
 
         bboxes = []
         scores = []
-        inference_result_dir = f'/disk2/mdwong/inference-results/seattle-dt-1/yolov4/0-0-1/'
-        frame_num = 100
-        results_file = os.path.join(inference_result_dir, f'frame{frame_num}.csv')
+        results_file = os.path.join(detections_dir, f'frame{frame_num}.csv')
+        if detection_class == 'car':
+            confidence_thresh = CONFIDENCE_CAR_THRESHOLD
+        else:
+            confidence_thresh = CONFIDENCE_PERSON_THRESHOLD
         df = pd.read_csv(results_file)
         for idx, row in df.iterrows():
             if row['class'] != detection_class and row['confidence'] >= confidence_thresh:
                 continue 
-#            w = row['right'] - row['left']
-#            h = row['bottom'] - row['top']
-#            bboxes.append((row['left'], row['top'], w, h))
             bboxes.append([row['left'], row['top'], row['right'], row['bottom']])
             scores.append(row['confidence'])
              
         return bboxes, scores, img_info
-
-
-#        with torch.no_grad():
-#            timer.tic()
-#            outputs = self.model(img)
-#            if self.decoder is not None:
-#                outputs = self.decoder(outputs, dtype=outputs.type())
-#            outputs = postprocess(
-#                outputs, self.num_classes, self.confthre, self.nmsthre
-#            )
-#            #logger.info("Infer time: {:.4f}s".format(time.time() - t0))
-#        return outputs, img_info
-
-
 
 def image_demo(predictor, vis_folder, current_time, args):
     if osp.isdir(args.path):
@@ -206,9 +204,8 @@ def image_demo(predictor, vis_folder, current_time, args):
     results = []
 
     for frame_id, img_path in enumerate(files, 1):
-        detection_class = 'car'
-        confidence_thresh = 0.7
-        bboxes, scores, img_info = predictor.inference(img_path, detection_class, confidence_thresh, timer)
+        frame_num = frame_id * args.skip
+        bboxes, scores, img_info = predictor.inference(img_path, args.object_class, args.detections_dir, frame_num, timer)
 #        if outputs[0] is not None:
         online_targets = tracker.update(bboxes, scores, [img_info['height'], img_info['width']], exp.test_size)
         online_tlwhs = []
@@ -223,9 +220,14 @@ def image_demo(predictor, vis_folder, current_time, args):
                 online_ids.append(tid)
                 online_scores.append(t.score)
                 # save results
+                x2 = int(tlwh[0] + tlwh[2])
+                y2 = int(tlwh[1] + tlwh[3])
                 results.append(
-                    f"{frame_id},{tid},{tlwh[0]:.2f},{tlwh[1]:.2f},{tlwh[2]:.2f},{tlwh[3]:.2f},{t.score:.2f},-1,-1,-1\n"
-                )
+                    f'{frame_id},{tid},{int(tlwh[0])},{int(tlwh[1])},{x2},{y2},{t.score:.2f},-1,-1,-1\n'
+                ) 
+#                results.append(
+#                    f"{frame_id},{tid},{tlwh[0]:.2f},{tlwh[1]:.2f},{tlwh[2]:.2f},{tlwh[3]:.2f},{t.score:.2f},-1,-1,-1\n"
+#                )
         timer.toc()
         online_im = plot_tracking(
             img_info['raw_img'], online_tlwhs, online_ids, frame_id=frame_id, fps=1. / timer.average_time
@@ -271,7 +273,7 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
     vid_writer = cv2.VideoWriter(
         save_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (int(width), int(height))
     )
-    tracker = BYTETracker(args, frame_rate=30)
+    tracker = BYTETracker(args, frame_rate=args.fps)
     timer = Timer()
     frame_id = 0
     results = []
@@ -280,9 +282,8 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
             logger.info('Processing frame {} ({:.2f} fps)'.format(frame_id, 1. / max(1e-5, timer.average_time)))
         ret_val, frame = cap.read()
         if ret_val:
-            detection_class = 'car'
-            confidence_thresh = 0.7
-            bboxes, scores, img_info = predictor.inference(frame, detection_class, confidence_thresh, timer)
+            frame_num = frame_id * args.skip
+            bboxes, scores, img_info = predictor.inference(frame, args.object_class, args.detections_dir, frame_num, timer)
 #            if outputs[0] is not None:
             online_targets = tracker.update(bboxes, scores, [img_info['height'], img_info['width']], exp.test_size)
             online_tlwhs = []
@@ -296,9 +297,15 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
                     online_tlwhs.append(tlwh)
                     online_ids.append(tid)
                     online_scores.append(t.score)
+
+                    x2 = int(tlwh[0] + tlwh[2])
+                    y2 = int(tlwh[1] + tlwh[3])
                     results.append(
-                        f"{frame_id},{tid},{tlwh[0]:.2f},{tlwh[1]:.2f},{tlwh[2]:.2f},{tlwh[3]:.2f},{t.score:.2f},-1,-1,-1\n"
-                    )
+                        f'{frame_id},{tid},{int(tlwh[0])},{int(tlwh[1])},{x2},{y2},{t.score:.2f},-1,-1,-1\n'
+                    ) 
+#                    results.append(
+#                        f"{frame_id},{tid},{tlwh[0]:.2f},{tlwh[1]:.2f},{tlwh[2]:.2f},{tlwh[3]:.2f},{t.score:.2f},-1,-1,-1\n"
+#                    )
             timer.toc()
             online_im = plot_tracking(
                 img_info['raw_img'], online_tlwhs, online_ids, frame_id=frame_id + 1, fps=1. / timer.average_time
