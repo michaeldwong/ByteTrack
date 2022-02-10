@@ -3,6 +3,7 @@ import os
 import os.path as osp
 import time
 import cv2
+import pandas as pd
 import torch
 
 from loguru import logger
@@ -102,14 +103,14 @@ def get_image_list(path):
 
 
 def write_results(filename, results):
-    save_format = '{frame},{id},{x1},{y1},{w},{h},{s},-1,-1,-1\n'
+    save_format = '{frame},{id},{x1},{y1},{x2},{y2},{s},-1,-1,-1\n'
     with open(filename, 'w') as f:
         for frame_id, tlwhs, track_ids, scores in results:
             for tlwh, track_id, score in zip(tlwhs, track_ids, scores):
                 if track_id < 0:
                     continue
                 x1, y1, w, h = tlwh
-                line = save_format.format(frame=frame_id, id=track_id, x1=round(x1, 1), y1=round(y1, 1), w=round(w, 1), h=round(h, 1), s=round(score, 2))
+                line = save_format.format(frame=frame_id, id=track_id, x1=int(x1), y1=int(y1),x2=x1+w, y2=y1+h, s=round(score, 2))
                 f.write(line)
     logger.info('save results to {}'.format(filename))
 
@@ -136,7 +137,7 @@ class Predictor(object):
             from torch2trt import TRTModule
 
             model_trt = TRTModule()
-            model_trt.load_state_dict(torch.load(trt_file))
+            model_trt.load_state_dict(torch.load(trt_file), strict=False)
 
             x = torch.ones((1, 3, exp.test_size[0], exp.test_size[1]), device=device)
             self.model(x)
@@ -144,7 +145,7 @@ class Predictor(object):
         self.rgb_means = (0.485, 0.456, 0.406)
         self.std = (0.229, 0.224, 0.225)
 
-    def inference(self, img, timer):
+    def inference(self, img, detection_class, confidence_thresh, timer):
         img_info = {"id": 0}
         if isinstance(img, str):
             img_info["file_name"] = osp.basename(img)
@@ -163,16 +164,35 @@ class Predictor(object):
         if self.fp16:
             img = img.half()  # to FP16
 
-        with torch.no_grad():
-            timer.tic()
-            outputs = self.model(img)
-            if self.decoder is not None:
-                outputs = self.decoder(outputs, dtype=outputs.type())
-            outputs = postprocess(
-                outputs, self.num_classes, self.confthre, self.nmsthre
-            )
-            #logger.info("Infer time: {:.4f}s".format(time.time() - t0))
-        return outputs, img_info
+        bboxes = []
+        scores = []
+        inference_result_dir = f'/disk2/mdwong/inference-results/seattle-dt-1/yolov4/0-0-1/'
+        frame_num = 100
+        results_file = os.path.join(inference_result_dir, f'frame{frame_num}.csv')
+        df = pd.read_csv(results_file)
+        for idx, row in df.iterrows():
+            if row['class'] != detection_class and row['confidence'] >= confidence_thresh:
+                continue 
+#            w = row['right'] - row['left']
+#            h = row['bottom'] - row['top']
+#            bboxes.append((row['left'], row['top'], w, h))
+            bboxes.append([row['left'], row['top'], row['right'], row['bottom']])
+            scores.append(row['confidence'])
+             
+        return bboxes, scores, img_info
+
+
+#        with torch.no_grad():
+#            timer.tic()
+#            outputs = self.model(img)
+#            if self.decoder is not None:
+#                outputs = self.decoder(outputs, dtype=outputs.type())
+#            outputs = postprocess(
+#                outputs, self.num_classes, self.confthre, self.nmsthre
+#            )
+#            #logger.info("Infer time: {:.4f}s".format(time.time() - t0))
+#        return outputs, img_info
+
 
 
 def image_demo(predictor, vis_folder, current_time, args):
@@ -186,31 +206,33 @@ def image_demo(predictor, vis_folder, current_time, args):
     results = []
 
     for frame_id, img_path in enumerate(files, 1):
-        outputs, img_info = predictor.inference(img_path, timer)
-        if outputs[0] is not None:
-            online_targets = tracker.update(outputs[0], [img_info['height'], img_info['width']], exp.test_size)
-            online_tlwhs = []
-            online_ids = []
-            online_scores = []
-            for t in online_targets:
-                tlwh = t.tlwh
-                tid = t.track_id
-                vertical = tlwh[2] / tlwh[3] > args.aspect_ratio_thresh
-                if tlwh[2] * tlwh[3] > args.min_box_area and not vertical:
-                    online_tlwhs.append(tlwh)
-                    online_ids.append(tid)
-                    online_scores.append(t.score)
-                    # save results
-                    results.append(
-                        f"{frame_id},{tid},{tlwh[0]:.2f},{tlwh[1]:.2f},{tlwh[2]:.2f},{tlwh[3]:.2f},{t.score:.2f},-1,-1,-1\n"
-                    )
-            timer.toc()
-            online_im = plot_tracking(
-                img_info['raw_img'], online_tlwhs, online_ids, frame_id=frame_id, fps=1. / timer.average_time
-            )
-        else:
-            timer.toc()
-            online_im = img_info['raw_img']
+        detection_class = 'car'
+        confidence_thresh = 0.7
+        bboxes, scores, img_info = predictor.inference(img_path, detection_class, confidence_thresh, timer)
+#        if outputs[0] is not None:
+        online_targets = tracker.update(bboxes, scores, [img_info['height'], img_info['width']], exp.test_size)
+        online_tlwhs = []
+        online_ids = []
+        online_scores = []
+        for t in online_targets:
+            tlwh = t.tlwh
+            tid = t.track_id
+            vertical = tlwh[2] / tlwh[3] > args.aspect_ratio_thresh
+            if tlwh[2] * tlwh[3] > args.min_box_area and not vertical:
+                online_tlwhs.append(tlwh)
+                online_ids.append(tid)
+                online_scores.append(t.score)
+                # save results
+                results.append(
+                    f"{frame_id},{tid},{tlwh[0]:.2f},{tlwh[1]:.2f},{tlwh[2]:.2f},{tlwh[3]:.2f},{t.score:.2f},-1,-1,-1\n"
+                )
+        timer.toc()
+        online_im = plot_tracking(
+            img_info['raw_img'], online_tlwhs, online_ids, frame_id=frame_id, fps=1. / timer.average_time
+        )
+#        else:
+#            timer.toc()
+#            online_im = img_info['raw_img']
 
         # result_image = predictor.visual(outputs[0], img_info, predictor.confthre)
         if args.save_result:
@@ -258,30 +280,32 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
             logger.info('Processing frame {} ({:.2f} fps)'.format(frame_id, 1. / max(1e-5, timer.average_time)))
         ret_val, frame = cap.read()
         if ret_val:
-            outputs, img_info = predictor.inference(frame, timer)
-            if outputs[0] is not None:
-                online_targets = tracker.update(outputs[0], [img_info['height'], img_info['width']], exp.test_size)
-                online_tlwhs = []
-                online_ids = []
-                online_scores = []
-                for t in online_targets:
-                    tlwh = t.tlwh
-                    tid = t.track_id
-                    vertical = tlwh[2] / tlwh[3] > args.aspect_ratio_thresh
-                    if tlwh[2] * tlwh[3] > args.min_box_area and not vertical:
-                        online_tlwhs.append(tlwh)
-                        online_ids.append(tid)
-                        online_scores.append(t.score)
-                        results.append(
-                            f"{frame_id},{tid},{tlwh[0]:.2f},{tlwh[1]:.2f},{tlwh[2]:.2f},{tlwh[3]:.2f},{t.score:.2f},-1,-1,-1\n"
-                        )
-                timer.toc()
-                online_im = plot_tracking(
-                    img_info['raw_img'], online_tlwhs, online_ids, frame_id=frame_id + 1, fps=1. / timer.average_time
-                )
-            else:
-                timer.toc()
-                online_im = img_info['raw_img']
+            detection_class = 'car'
+            confidence_thresh = 0.7
+            bboxes, scores, img_info = predictor.inference(frame, detection_class, confidence_thresh, timer)
+#            if outputs[0] is not None:
+            online_targets = tracker.update(bboxes, scores, [img_info['height'], img_info['width']], exp.test_size)
+            online_tlwhs = []
+            online_ids = []
+            online_scores = []
+            for t in online_targets:
+                tlwh = t.tlwh
+                tid = t.track_id
+                vertical = tlwh[2] / tlwh[3] > args.aspect_ratio_thresh
+                if tlwh[2] * tlwh[3] > args.min_box_area and not vertical:
+                    online_tlwhs.append(tlwh)
+                    online_ids.append(tid)
+                    online_scores.append(t.score)
+                    results.append(
+                        f"{frame_id},{tid},{tlwh[0]:.2f},{tlwh[1]:.2f},{tlwh[2]:.2f},{tlwh[3]:.2f},{t.score:.2f},-1,-1,-1\n"
+                    )
+            timer.toc()
+            online_im = plot_tracking(
+                img_info['raw_img'], online_tlwhs, online_ids, frame_id=frame_id + 1, fps=1. / timer.average_time
+            )
+#            else:
+#                timer.toc()
+#                online_im = img_info['raw_img']
             if args.save_result:
                 vid_writer.write(online_im)
             ch = cv2.waitKey(1)

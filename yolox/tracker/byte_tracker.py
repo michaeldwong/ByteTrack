@@ -156,34 +156,36 @@ class BYTETracker(object):
         self.max_time_lost = self.buffer_size
         self.kalman_filter = KalmanFilter()
 
-    def update(self, output_results, img_info, img_size):
+    def update(self, dets, scores_keep, img_info, img_size):
         self.frame_id += 1
         activated_starcks = []
         refind_stracks = []
         lost_stracks = []
         removed_stracks = []
 
-        if output_results.shape[1] == 5:
-            scores = output_results[:, 4]
-            bboxes = output_results[:, :4]
-        else:
-            output_results = output_results.cpu().numpy()
-            scores = output_results[:, 4] * output_results[:, 5]
-            bboxes = output_results[:, :4]  # x1y1x2y2
+#        if output_results.shape[1] == 5:
+#            scores = output_results[:, 4]
+#            bboxes = output_results[:, :4]
+#        else:
+#            output_results = output_results.cpu().numpy()
+#            scores = output_results[:, 4] * output_results[:, 5]
+#            bboxes = output_results[:, :4]  # x1y1x2y2
         img_h, img_w = img_info[0], img_info[1]
         scale = min(img_size[0] / float(img_h), img_size[1] / float(img_w))
-        bboxes /= scale
+#        bboxes /= scale
+#
+#        remain_inds = scores > self.args.track_thresh
+#        inds_low = scores > 0.1
+#        inds_high = scores < self.args.track_thresh
+#
+#        inds_second = np.logical_and(inds_low, inds_high)
+#        dets_second = bboxes[inds_second]
+#        dets = bboxes[remain_inds]
 
-        remain_inds = scores > self.args.track_thresh
-        inds_low = scores > 0.1
-        inds_high = scores < self.args.track_thresh
-
-        inds_second = np.logical_and(inds_low, inds_high)
-        dets_second = bboxes[inds_second]
-        dets = bboxes[remain_inds]
-        scores_keep = scores[remain_inds]
-        scores_second = scores[inds_second]
-
+        dets_second = []
+        scores_second = []
+        print('BBOXES: ', dets)
+        print('SCORES ', scores_keep)
         if len(dets) > 0:
             '''Detections'''
             detections = [STrack(STrack.tlbr_to_tlwh(tlbr), s) for
