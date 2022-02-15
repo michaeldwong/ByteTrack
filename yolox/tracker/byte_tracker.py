@@ -168,8 +168,6 @@ class BYTETracker(object):
 
         dets_second = []
         scores_second = []
-        print('BBOXES: ', dets)
-        print('SCORES ', scores_keep)
         if len(dets) > 0:
             '''Detections'''
             detections = [STrack(STrack.tlbr_to_tlwh(tlbr), s) for
