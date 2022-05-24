@@ -186,7 +186,7 @@ class Predictor(object):
             confidence_thresh = CONFIDENCE_PERSON_THRESHOLD
         df = pd.read_csv(results_file)
         for idx, row in df.iterrows():
-            if row['class'] != detection_class and row['confidence'] >= confidence_thresh:
+            if row['class'] != detection_class or row['confidence'] < confidence_thresh:
                 continue 
             bboxes.append([row['left'], row['top'], row['right'], row['bottom']])
             scores.append(row['confidence'])
