@@ -17,8 +17,8 @@ from yolox.tracking_utils.timer import Timer
 
 
 IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
-CONFIDENCE_CAR_THRESHOLD = 0.7
-CONFIDENCE_PERSON_THRESHOLD = 0.5
+CONFIDENCE_CAR_THRESHOLD = 70.0
+CONFIDENCE_PERSON_THRESHOLD = 50.0
 
 def make_parser():
     parser = argparse.ArgumentParser("ByteTrack Demo!")
@@ -41,9 +41,12 @@ def make_parser():
     )
 
     parser.add_argument(
-        "--object-class", default='car', help="Object class to detect", type=str
+        "--object-class", default='person', help="Object class to detect", type=str
     )
 
+    parser.add_argument(
+        "--begin-frame", default=1, help="First frame in video", type=int
+    )
     parser.add_argument("--camid", type=int, default=0, help="webcam demo camera id")
     parser.add_argument(
         "--save_result",
@@ -186,11 +189,11 @@ class Predictor(object):
             confidence_thresh = CONFIDENCE_PERSON_THRESHOLD
         df = pd.read_csv(results_file)
         for idx, row in df.iterrows():
-            if row['class'] != detection_class and row['confidence'] >= confidence_thresh:
+            if row['class'] != detection_class or row['confidence'] < confidence_thresh:
                 continue 
             bboxes.append([row['left'], row['top'], row['right'], row['bottom']])
-            scores.append(row['confidence'])
-             
+#            scores.append(row['confidence']+10.0)
+            scores.append(100.0)
         return bboxes, scores, img_info
 
 def image_demo(predictor, vis_folder, current_time, args):
@@ -204,7 +207,9 @@ def image_demo(predictor, vis_folder, current_time, args):
     results = []
 
     for frame_id, img_path in enumerate(files, 1):
-        frame_num = frame_id * args.skip
+        frame_num = frame_id + args.begin_frame
+        while frame_num % args.skip != 0:
+            frame_num += 1
         bboxes, scores, img_info = predictor.inference(img_path, args.object_class, args.detections_dir, frame_num, timer)
 #        if outputs[0] is not None:
         online_targets = tracker.update(bboxes, scores, [img_info['height'], img_info['width']], exp.test_size)
@@ -270,12 +275,18 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
     timer = Timer()
     frame_id = 0
     results = []
+    begin_frame =args.begin_frame
+
+    while begin_frame % args.skip != 0:
+        begin_frame += 1
+
     while True:
         if frame_id % 20 == 0:
             logger.info('Processing frame {} ({:.2f} fps)'.format(frame_id, 1. / max(1e-5, timer.average_time)))
+        frame_num = frame_id * args.skip + begin_frame
         ret_val, frame = cap.read()
-        if ret_val:
-            frame_num = frame_id * args.skip
+
+        if ret_val :
             bboxes, scores, img_info = predictor.inference(frame, args.object_class, args.detections_dir, frame_num, timer)
 #            if outputs[0] is not None:
             online_targets = tracker.update(bboxes, scores, [img_info['height'], img_info['width']], exp.test_size)
