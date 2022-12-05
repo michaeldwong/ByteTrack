@@ -289,7 +289,7 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
         if ret_val :
             bboxes, scores, img_info = predictor.inference(frame, args.object_class, args.detections_dir, frame_num, timer)
 #            if outputs[0] is not None:
-            online_targets = tracker.update(bboxes, scores, [img_info['height'], img_info['width']], exp.test_size)
+            online_targets = tracker.update(bboxes, scores, [img_info['height'], img_info['width']], exp.test_size, frame_num)
             online_tlwhs = []
             online_ids = []
             online_scores = []
